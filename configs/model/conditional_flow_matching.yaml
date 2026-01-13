@@ -1,0 +1,42 @@
+_target_: src.models.conditional_flow_matching.ConditionalFlowMatchingLitModule
+
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 0.0
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _partial_: true
+  mode: min
+  factor: 0.1
+  patience: 10
+
+net:
+  _target_: torchcfm.models.unet.UNetModel
+  dim: [3, 256, 256]  # 3 channels for RGB images, 256x256 size
+  num_channels: 128  # Larger base channel count for better capacity
+  num_res_blocks: 2  # More residual blocks per level
+  attention_resolutions: "16,8"  # Attention at 16x16 and 8x8 feature maps
+  dropout: 0.1  # Regularization
+  use_scale_shift_norm: true  # Better conditioning on time embeddings
+  num_heads: 4  # Multi-head attention
+  num_head_channels: 32  # Channels per attention head
+  channel_mult: [1, 2, 2, 4]  # Progressive channel multiplication
+
+flow_matcher:
+  _target_: torchcfm.conditional_flow_matching.ConditionalFlowMatcher
+  sigma: 0.0
+
+# Optional: NeuralODE solver for inference only (not needed during training)
+solver:
+  _target_: torchdyn.core.NeuralODE
+  _partial_: true
+  solver: dopri5
+  sensitivity: adjoint
+  atol: 1e-4
+  rtol: 1e-4
+
+# compile model for faster training with pytorch 2.0
+compile: false

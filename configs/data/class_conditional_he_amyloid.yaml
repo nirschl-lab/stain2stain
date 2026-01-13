@@ -1,0 +1,16 @@
+_target_: src.data.class_conditional_he_amyloid.ClassConditionalAnyToAnyDataModule
+data_dir: /data1/shared/data/destain_restain/he_amyloid/
+class_folder_mapping:
+  0: "train_he"
+  1: "train_ihc"
+  2: "train_gray"
+crop_size: 256
+same_crop_for_pair: True
+batch_size: 8
+num_workers: 4
+pin_memory: True
+source_domain_mode: "random"
+filename_mode: "intersection"
+allowed_exts: [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
+val_split: 0.2
+split_seed: 42
