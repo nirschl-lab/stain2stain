@@ -8,7 +8,7 @@ wandb:
   id: null # pass correct id to resume experiment!
   anonymous: null # enable anonymous logging
   project: "stain2stain"
-  log_model: False # upload lightning ckpts
+  log_model: all # checkpoints are logged via WandbCheckpointLogger callback
   prefix: "" # a string to put at the beginning of metric keys
   # entity: "" # set to name of your wandb team
   group: ""

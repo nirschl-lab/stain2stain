@@ -2,7 +2,7 @@
 
 model_checkpoint:
   _target_: lightning.pytorch.callbacks.ModelCheckpoint
-  dirpath: ${paths.output_dir}/checkpoints
+  dirpath: checkpoints
   filename: epoch_{epoch:03d}
   monitor: val/loss  # Changed from val/acc
   verbose: false

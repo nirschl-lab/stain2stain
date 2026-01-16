@@ -30,10 +30,12 @@ class PairedHEIHCDataset(Dataset):
         """
         self.he_dir = os.path.join(data_dir, folder)
         self.ihc_dir = os.path.join(data_dir, folder)
+        self.mask_dir = os.path.join(data_dir, folder)
         self.image_size = image_size
         self.direction = direction
         self.source_column = source_column
         self.target_column = target_column
+        self.mask_column = 'amyloid_filepath'
 
         # Load metadata from CSV
         csv_path = os.path.join(data_dir, csv_file_name)
@@ -47,6 +49,7 @@ class PairedHEIHCDataset(Dataset):
         print(f"Loading paired HE-IHC dataset from:")
         print(f"  HE directory: {self.he_dir}")
         print(f"  IHC directory: {self.ihc_dir}")
+        print(f"  Mask directory: {self.mask_dir}")
         print(f"  Number of paired images: {len(self.metadata)}")
 
         # Default transform: resize and normalize
@@ -63,11 +66,12 @@ class PairedHEIHCDataset(Dataset):
         Returns:
             he_img: HE image tensor (C, H, W)
             ihc_img: IHC image tensor (C, H, W)
-            filename: Original filename for reference
+            mask_img: Mask image tensor (1, H, W)
         """
         row = self.metadata.iloc[idx]
         he_filename = row[self.source_column]
         ihc_filename = row[self.target_column]
+        mask_filename = row[self.mask_column]
 
         # Load HE image
         he_path = os.path.join(self.he_dir, he_filename)
@@ -80,14 +84,24 @@ class PairedHEIHCDataset(Dataset):
         assert os.path.exists(ihc_path), f"IHC image not found: {ihc_path}"
         ihc_img_cv = cv2.imread(ihc_path)
         ihc_img = Image.fromarray(cv2.cvtColor(ihc_img_cv, cv2.COLOR_BGR2RGB))
+
+        # Load Mask image
+        mask_path = os.path.join(self.mask_dir, mask_filename)
+        assert os.path.exists(mask_path), f"Mask image not found: {mask_path}"
+        mask_img_cv = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        mask_img_cv = cv2.resize(mask_img_cv,(self.image_size, self.image_size),interpolation=cv2.INTER_NEAREST)
+        # only keep pixels value > 1
+        mask_img_cv = np.where(mask_img_cv > 1, 1, 0).astype(np.uint8)
+
+        # Binarize the mask
         # Apply transformations
         he_img = self.transform(he_img)
         ihc_img = self.transform(ihc_img)
 
         if self.direction == "HE_to_IHC":
-            return he_img, ihc_img
+            return he_img, ihc_img, torch.from_numpy(mask_img_cv).unsqueeze(0)
         else:
-            return ihc_img, he_img # Reverse direction
+            return ihc_img, he_img, torch.from_numpy(mask_img_cv).unsqueeze(0)
 
 class PairedHEIHCDataModule(LightningDataModule):
     def __init__(
@@ -162,6 +176,7 @@ class PairedHEIHCDataModule(LightningDataModule):
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=True,
+            collate_fn=self.custom_collate_fn,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
             prefetch_factor=2 if self.hparams.num_workers > 0 else None,
         )
@@ -186,6 +201,7 @@ class PairedHEIHCDataModule(LightningDataModule):
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=False,
+            collate_fn=self.custom_collate_fn,
             persistent_workers=True if self.hparams.num_workers > 0 else False,
             prefetch_factor=2 if self.hparams.num_workers > 0 else None,
         )
@@ -210,6 +226,9 @@ class PairedHEIHCDataModule(LightningDataModule):
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=False,
+            collate_fn=self.custom_collate_fn,
+            persistent_workers=True if self.hparams.num_workers > 0 else False,
+            prefetch_factor=2 if self.hparams.num_workers > 0 else None,
         )
 
     def teardown(self, stage: Optional[str] = None) -> None:
@@ -236,29 +255,40 @@ class PairedHEIHCDataModule(LightningDataModule):
         """
         pass
 
+    def custom_collate_fn(self, batch):
+        # Unpack batch
+        images, targets, masks = zip(*batch)
+        
+        # Stack tensors (make sure they're contiguous)
+        images = torch.stack([img.contiguous() for img in images])
+        targets = torch.stack([tgt.contiguous() for tgt in targets])
+        masks = torch.stack([msk.contiguous() for msk in masks])
+        
+        return images, targets, masks
+
 
 if __name__ == "__main__":
     data_dir = "/data1/shared/data/destain_restain/he_amyloid/positive_crops/flow_matching/"
-    dataset = PairedHEIHCDataset(data_dir=data_dir, csv_file_name="dataset_nirschl_et_al_2026_metadata.csv", folder="train", image_size=512)
+    dataset = PairedHEIHCDataset(data_dir=data_dir, csv_file_name="dataset_nirschl_et_al_2026_metadata.csv", folder="train", image_size=512, source_column="he_filepath", target_column="ihc_filepath")
     print(f"Dataset length: {len(dataset)}")
-    he_img, ihc_img = dataset[0]
-    print(f"HE image shape: {he_img.shape}, IHC image shape: {ihc_img.shape}")
+    he_img, ihc_img, mask_img = dataset[0]
+    print(f"HE image shape: {he_img.shape}, IHC image shape: {ihc_img.shape}, Mask image shape: {mask_img.shape}")
 
     data_module = PairedHEIHCDataModule(data_dir=data_dir, csv_file_name="dataset_nirschl_et_al_2026_metadata.csv", batch_size=4, image_size=512)
     data_module.prepare_data()
     data_module.setup(stage="fit")
     train_loader = data_module.train_dataloader()
     for batch in train_loader:
-        he_imgs, ihc_imgs = batch
-        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}")
+        he_imgs, ihc_imgs, mask_imgs = batch
+        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
         break
     val_loader = data_module.val_dataloader()
     for batch in val_loader:
-        he_imgs, ihc_imgs = batch
-        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}")
+        he_imgs, ihc_imgs, mask_imgs = batch
+        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
         break
     test_loader = data_module.test_dataloader()
     for batch in test_loader:
-        he_imgs, ihc_imgs = batch
-        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}")
+        he_imgs, ihc_imgs, mask_imgs = batch
+        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
         break

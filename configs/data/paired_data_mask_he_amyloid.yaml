@@ -1,4 +1,4 @@
-_target_: src.data.paired_data_he_amyloid.PairedHEIHCDataModule
+_target_: src.data.paired_data_mask_he_amyloid.PairedHEIHCDataModule
 data_dir: /data1/shared/data/destain_restain/he_amyloid/positive_crops/flow_matching/
 csv_file_name: dataset_nirschl_et_al_2026_metadata.csv
 source_column: 'he_filepath'

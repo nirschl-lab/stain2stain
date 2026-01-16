@@ -1,3 +1,4 @@
+# configs/callbacks/default.yaml
 defaults:
   - model_checkpoint
   - early_stopping
@@ -7,16 +8,16 @@ defaults:
 
 model_checkpoint:
   dirpath: ${paths.output_dir}/checkpoints
-  filename: "epoch_{epoch:03d}"
+  filename: "best.ckpt"
   monitor: "val/loss"
   mode: "min"
   save_last: True
   auto_insert_metric_name: False
 
 early_stopping:
-  monitor: "val/loss"
-  patience: 100
-  mode: "min"
+  monitor: "val/f1"
+  patience: 20
+  mode: "max"
 
 model_summary:
   max_depth: -1

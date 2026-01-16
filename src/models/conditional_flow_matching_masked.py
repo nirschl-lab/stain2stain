@@ -49,26 +49,36 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         return self.net(t, x)
 
     def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
-        # import pdb; pdb.set_trace()
         """Perform a single model step for training or validation.
         
-        :param batch: A batch of data (source_img, target_img, target_label)
+        :param batch: A batch of data (source_img, target_img, target_seg_mask)
         :return: The loss value
         """
-        source_img, target_img = batch
-        
-        x0 = source_img  # paired source
-        x1 = target_img  # paired target (same filename)
-        
-        # Sample along probability path between x0 and x1
+        source_img, target_img, mask = batch  # mask: DAB+ segmentation (B, 1, H, W)
+
+        x0 = source_img
+        x1 = target_img
+
+        # Sample interpolated point and conditional velocity from flow matcher
         t, xt, ut = self.flow_matcher.sample_location_and_conditional_flow(x0, x1)
-        
-        # Predict vector field conditioned on target label
+
+        # Predict vector field conditioned on xt
         vt = self.forward(t, xt)
-        
-        # Compute MSE loss
-        loss = torch.mean((vt - ut) ** 2)
-        
+
+        # Compute squared error
+        squared_error = (vt - ut) ** 2  # (B, C, H, W)
+
+        # Broadcast mask to match channels
+        mask = mask.expand_as(squared_error)
+
+        # Apply segmentation weighting to the squared error
+        loss_masked = torch.mean(mask * squared_error)  # Segmentation-weighted loss
+        loss_unmasked = torch.mean(squared_error)       # Standard flow matching loss
+
+        # Combine weighted and unweighted losses
+        lambda_weight = 0.5
+        loss = lambda_weight * loss_masked + (1 - lambda_weight) * loss_unmasked
+
         return loss
 
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
@@ -242,66 +252,52 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         # Get train dataloader
         if self.log_images is False:
             return
+        train_dataloader = self.trainer.train_dataloader
         
-        # Only rank 0 should log images to avoid deadlock
-        if self.trainer.is_global_zero:
-            train_dataloader = self.trainer.train_dataloader
+        if train_dataloader is None:
+            return
+        
+        # Get one batch from train dataloader
+        try:
+            # Get the first batch
+            batch = next(iter(train_dataloader))
             
-            if train_dataloader is None:
-                return
-            
-            # Get one batch from train dataloader
-            try:
-                # Get the first batch
-                batch = next(iter(train_dataloader))
+            # Move batch to device
+            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                source_imgs = batch[0].to(self.device)
+                target_imgs = batch[1].to(self.device)
+                batch_images = (source_imgs, target_imgs)
                 
-                # Move batch to device
-                if isinstance(batch, (tuple, list)) and len(batch) >= 2:
-                    source_imgs = batch[0].to(self.device)
-                    target_imgs = batch[1].to(self.device)
-                    batch_images = (source_imgs, target_imgs)
-                    
-                    # Log images
-                    self._log_images_to_wandb(batch_images, split="train")
-            except Exception as e:
-                print(f"Error logging train images: {e}")
-        
-        # Ensure all ranks wait for rank 0 to finish logging
-        if self.trainer.world_size > 1:
-            torch.distributed.barrier()
+                # Log images
+                self._log_images_to_wandb(batch_images, split="train")
+        except Exception as e:
+            print(f"Error logging train images: {e}")
     
     def on_validation_epoch_end(self) -> None:
         """Hook called at the end of validation epoch to log images."""
         if self.log_images is False:
             return
+        # Get val dataloader
+        val_dataloaders = self.trainer.val_dataloaders
         
-        # Only rank 0 should log images to avoid deadlock
-        if self.trainer.is_global_zero:
-            # Get val dataloader
-            val_dataloaders = self.trainer.val_dataloaders
+        if val_dataloaders is None:
+            return
+        
+        # Handle single dataloader or list of dataloaders
+        val_dataloader = val_dataloaders[0] if isinstance(val_dataloaders, list) else val_dataloaders
+        
+        # Get one batch from val dataloader
+        try:
+            # Get the first batch
+            batch = next(iter(val_dataloader))
             
-            if val_dataloaders is None:
-                return
-            
-            # Handle single dataloader or list of dataloaders
-            val_dataloader = val_dataloaders[0] if isinstance(val_dataloaders, list) else val_dataloaders
-            
-            # Get one batch from val dataloader
-            try:
-                # Get the first batch
-                batch = next(iter(val_dataloader))
+            # Move batch to device
+            if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                source_imgs = batch[0].to(self.device)
+                target_imgs = batch[1].to(self.device)
+                batch_images = (source_imgs, target_imgs)
                 
-                # Move batch to device
-                if isinstance(batch, (tuple, list)) and len(batch) >= 2:
-                    source_imgs = batch[0].to(self.device)
-                    target_imgs = batch[1].to(self.device)
-                    batch_images = (source_imgs, target_imgs)
-                    
-                    # Log images
-                    self._log_images_to_wandb(batch_images, split="val")
-            except Exception as e:
-                print(f"Error logging val images: {e}")
-        
-        # Ensure all ranks wait for rank 0 to finish logging
-        if self.trainer.world_size > 1:
-            torch.distributed.barrier()
+                # Log images
+                self._log_images_to_wandb(batch_images, split="val")
+        except Exception as e:
+            print(f"Error logging val images: {e}")

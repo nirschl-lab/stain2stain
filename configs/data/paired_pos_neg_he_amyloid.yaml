@@ -1,0 +1,13 @@
+_target_: src.data.paired_postive_negative_data_he_amyloid.PairedHEIHCDataModule
+data_dir: /data1/shared/data/destain_restain/he_amyloid/positive_crops/flow_matching/
+csv_file_name: dataset_nirschl_et_al_2026_metadata.csv
+batch_size: 2
+num_workers: 4
+image_size: 512
+direction: HE_to_IHC
+pin_memory: true
+negative_data_dir: /data1/shared/data/destain_restain/he_amyloid/
+negative_he_folder: train_he
+negative_ihc_folder: train_ihc
+crop_size: 512
+use_negative_data: true

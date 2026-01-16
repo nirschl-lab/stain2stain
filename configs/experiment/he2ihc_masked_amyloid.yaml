@@ -4,31 +4,31 @@
 # python train.py experiment=example
 
 defaults:
-  - override /data: paired_data_he_amyloid
-  - override /model: conditional_flow_matching
+  - override /data: paired_data_mask_he_amyloid
+  - override /model: conditional_flow_matching_masked
   - override /callbacks: default
   - override /trainer: default
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
-name: "conditional_he_amyloid"
+name: "conditional_he_amyloid_masked"
 WANDB_PROJECT: "stain2stain"
 tags: ["dev"]
 
 seed: 12345
 
 base_lr: 1e-4
-batch_size: 2
+batch_size: 8
 
 trainer:
-  min_epochs: 1
-  max_epochs: 5
-  accelerator: "gpu"
-  # strategy: "ddp"
-  devices: 1
-  log_every_n_steps: 2
-  limit_train_batches: 5
-  limit_val_batches: 2
+  min_epochs: 20
+  max_epochs: 50
+  accelerator: "cuda"
+  strategy: "ddp"
+  devices: 4
+  # log_every_n_steps: 2
+  # limit_train_batches: 5
+  # limit_val_batches: 2
 
 
 model:
@@ -39,6 +39,7 @@ model:
 
 data:
   batch_size: ${batch_size}
+  num_workers: 8
 
 logger:
   wandb:
@@ -46,7 +47,7 @@ logger:
     tags: ${tags}
     group: "Training"
     name: ${name}
-    log_model: "all"
+    log_model: True
   aim:
     experiment: ""
 

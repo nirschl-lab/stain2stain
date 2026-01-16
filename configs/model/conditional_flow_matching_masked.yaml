@@ -1,4 +1,4 @@
-_target_: src.models.conditional_flow_matching.ConditionalFlowMatchingLitModule
+_target_: src.models.conditional_flow_matching_masked.ConditionalFlowMatchingLitModule
 
 optimizer:
   _target_: torch.optim.Adam
