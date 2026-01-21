@@ -42,6 +42,15 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         self.log_images = log_images
         self.aux_loss_weight = aux_loss_weight
         
+        # Regression head for amyloid fraction prediction
+        # Assumes velocity field output has 3 channels (RGB)
+        C = 3
+        self.regression_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),  # global avg pooling over H, W
+            nn.Flatten(),  # shape: (B, C)
+            nn.Linear(C, 1),  # output: (B, 1)
+            nn.Sigmoid()  # Normalize to [0, 1]
+        )
         
         if compile:
             self.net = torch.compile(self.net)
@@ -54,7 +63,8 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         :return: Tuple of (predicted velocity field, amyloid fraction prediction)
         """
         vt = self.net(t, x)
-        return vt
+        frac_pred = self.regression_head(vt)
+        return vt, frac_pred.squeeze(-1)  # vt: (B, C, H, W), frac_pred: (B,)
 
     def model_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor]) -> torch.Tensor:
         """Perform a single model step for training or validation.
@@ -67,30 +77,39 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         x0 = source_img
         x1 = target_img
 
-        # Sample along probability path between x0 and x1
+        # Sample interpolated point and conditional velocity from flow matcher
         t, xt, ut = self.flow_matcher.sample_location_and_conditional_flow(x0, x1)
-        
-        # Predict vector field conditioned on target label
-        vt = self.forward(t, xt)
-        
-        # --- Mask-weighted flow matching loss ---
-        # Hyperparameter: how much to upweight ROI pixels
-        lam = getattr(self, "roi_lambda", 10.0)  # or set self.roi_lambda elsewhere
 
-        # (Optional) soften / dilate the mask a little to include borders/context
-        # mask = F.avg_pool2d(mask, kernel_size=3, stride=1, padding=1).clamp(0, 1)
+        # Predict vector field and amyloid fraction
+        vt, frac_pred = self.forward(t, xt)  # Returns: velocity field + amyloid fraction
+
+        # --- Flow matching loss ---
+        # Compute squared error
+        squared_error = (vt - ut) ** 2  # (B, C, H, W)
 
         # Broadcast mask to match channels
-        # vt/ut: (B,C,H,W), mask: (B,1,H,W) -> weights: (B,C,H,W)
-        weights = 1.0 + lam * mask
-        weights = weights.expand_as(vt)
+        mask_expanded = mask.expand_as(squared_error)
 
-        # Weighted mean squared error
-        per_pixel_sqerr = (vt - ut) ** 2
-        loss = (weights * per_pixel_sqerr).sum() / (weights.sum() + 1e-8)
+        # Apply segmentation weighting to the squared error
+        loss_masked = torch.mean(mask_expanded * squared_error)  # Segmentation-weighted loss
+        loss_unmasked = torch.mean(squared_error)       # Standard flow matching loss
 
-        return loss
-        
+        # Combine weighted and unweighted losses
+        lambda_weight = 0.5
+        flow_matching_loss = lambda_weight * loss_masked + (1 - lambda_weight) * loss_unmasked
+
+        # --- Amyloid fraction auxiliary loss ---
+        with torch.no_grad():
+            B, _, H, W = mask.shape
+            frac_true = mask.view(B, -1).float().mean(dim=1)  # Shape: (B,)
+
+        aux_loss = F.mse_loss(frac_pred, frac_true)
+
+        # --- Total loss ---
+        total_loss = flow_matching_loss + self.aux_loss_weight * aux_loss
+
+        return total_loss
+
     def training_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> torch.Tensor:
         """Perform a single training step.
         
@@ -98,12 +117,39 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         :param batch_idx: The index of the batch
         :return: The loss value
         """
-        loss = self.model_step(batch)
+        source_img, target_img, mask = batch
+        x0 = source_img
+        x1 = target_img
+
+        # Sample interpolated point and conditional velocity from flow matcher
+        t, xt, ut = self.flow_matcher.sample_location_and_conditional_flow(x0, x1)
+
+        # Predict vector field and amyloid fraction
+        vt, frac_pred = self.forward(t, xt)
+
+        # --- Flow matching loss ---
+        squared_error = (vt - ut) ** 2
+        mask_expanded = mask.expand_as(squared_error)
+        loss_masked = torch.mean(mask_expanded * squared_error)
+        loss_unmasked = torch.mean(squared_error)
+        lambda_weight = 0.5
+        flow_matching_loss = lambda_weight * loss_masked + (1 - lambda_weight) * loss_unmasked
+
+        # --- Amyloid fraction auxiliary loss ---
+        with torch.no_grad():
+            B, _, H, W = mask.shape
+            frac_true = mask.view(B, -1).float().mean(dim=1)
+        aux_loss = F.mse_loss(frac_pred, frac_true)
+
+        # --- Total loss ---
+        total_loss = flow_matching_loss + self.aux_loss_weight * aux_loss
         
-        # Log training loss
-        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        # Log losses
+        self.log("train/loss", total_loss, on_step=True, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("train/flow_matching_loss", flow_matching_loss, on_step=True, on_epoch=True, sync_dist=True)
+        self.log("train/aux_loss", aux_loss, on_step=True, on_epoch=True, sync_dist=True)
         
-        return loss
+        return total_loss
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single validation step.
@@ -111,10 +157,37 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         :param batch: A batch of data (source_img, target_img, target_label)
         :param batch_idx: The index of the batch
         """
-        loss = self.model_step(batch)
+        source_img, target_img, mask = batch
+        x0 = source_img
+        x1 = target_img
+
+        # Sample interpolated point and conditional velocity from flow matcher
+        t, xt, ut = self.flow_matcher.sample_location_and_conditional_flow(x0, x1)
+
+        # Predict vector field and amyloid fraction
+        vt, frac_pred = self.forward(t, xt)
+
+        # --- Flow matching loss ---
+        squared_error = (vt - ut) ** 2
+        mask_expanded = mask.expand_as(squared_error)
+        loss_masked = torch.mean(mask_expanded * squared_error)
+        loss_unmasked = torch.mean(squared_error)
+        lambda_weight = 0.5
+        flow_matching_loss = lambda_weight * loss_masked + (1 - lambda_weight) * loss_unmasked
+
+        # --- Amyloid fraction auxiliary loss ---
+        with torch.no_grad():
+            B, _, H, W = mask.shape
+            frac_true = mask.view(B, -1).float().mean(dim=1)
+        aux_loss = F.mse_loss(frac_pred, frac_true)
+
+        # --- Total loss ---
+        total_loss = flow_matching_loss + self.aux_loss_weight * aux_loss
         
         # Log validation loss
-        self.log("val/loss", loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/loss", total_loss, on_step=False, on_epoch=True, prog_bar=True, sync_dist=True)
+        self.log("val/flow_matching_loss", flow_matching_loss, on_step=False, on_epoch=True, sync_dist=True)
+        self.log("val/aux_loss", aux_loss, on_step=False, on_epoch=True, sync_dist=True)
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single test step.

@@ -11,8 +11,8 @@ defaults:
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
-name: "conditional_he_amyloid_masked"
-WANDB_PROJECT: "stain2stain"
+name: "conditional_he_amyloid_masked_with_high_lambda"
+WANDB_PROJECT: "positive_amyloid"
 tags: ["dev"]
 
 seed: 12345
