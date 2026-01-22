@@ -5,13 +5,13 @@
 
 defaults:
   - override /data: paired_data_mask_he_amyloid
-  - override /model: conditional_flow_matching_masked
+  - override /model: conditional_flow_matching_masked_condition
   - override /callbacks: default
   - override /trainer: default
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
-name: "conditional_he_amyloid_masked_with_high_lambda"
+name: "Non attention fully guided mask"
 WANDB_PROJECT: "positive_amyloid"
 tags: ["dev"]
 
@@ -35,7 +35,7 @@ model:
   optimizer:
     lr: ${base_lr}
     weight_decay: 1e-3
-  log_images: false
+  log_images: True
 
 data:
   batch_size: ${batch_size}
@@ -53,6 +53,15 @@ logger:
 
 callbacks:
   early_stopping: null
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "best-{epoch:03d}-{val/loss:.4f}"
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3  # Keep top 3 best models
+    save_last: True
+    auto_insert_metric_name: False
+    every_n_epochs: 10  # Save every 10 epochs
 
 # callbacks:
 #   early_stopping:
