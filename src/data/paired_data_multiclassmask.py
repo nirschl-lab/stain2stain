@@ -11,31 +11,42 @@ import cv2
 import numpy as np
 from lightning import LightningDataModule
 import pdb
+import torchvision.transforms.functional as TF
+import random
 
-class PairedHEIHCDataset(Dataset):
+class PairedDataset(Dataset):
     """
-    Dataset class for paired HE and IHC images.
+    Dataset class for paired source and target images.
     Assumes that images are stored in two separate directories with matching filenames.
     """
     
-    def __init__(self, data_dir, csv_file_name, source_column, target_column, folder, image_size=512, direction = "HE_to_IHC",):
+    def __init__(self, 
+                 data_dir, 
+                 csv_file_name, 
+                 source_column,  
+                 target_column, 
+                 folder, 
+                 mask_column='graywhite_filepath', 
+                 image_size=512, 
+                 direction = "S2T", 
+                 use_augmentation=False):
         """
         Args:
             data_dir (str): Path to the data directory which contains csv file, train, test and val folder.
             csv_file_name (str): Name of the CSV file containing metadata.
                 image_id: Unique identifier for each image pair.
                 he_filepath: image_id + '_he.png'
-                ihc_filepath: image_id + '_ihc.png'
+                lhe_filepath: image_id + '_lhe.png'
             folder (str): One of 'train', 'val', or 'test' to specify the dataset split.
         """
-        self.he_dir = os.path.join(data_dir, folder)
-        self.ihc_dir = os.path.join(data_dir, folder)
+        self.source_dir = os.path.join(data_dir, folder)
+        self.target_dir = os.path.join(data_dir, folder)
         self.mask_dir = os.path.join(data_dir, folder)
         self.image_size = image_size
         self.direction = direction
         self.source_column = source_column
         self.target_column = target_column
-        self.mask_column = 'amyloid_filepath'
+        self.mask_column = mask_column
 
         # Load metadata from CSV
         csv_path = os.path.join(data_dir, csv_file_name)
@@ -46,64 +57,107 @@ class PairedHEIHCDataset(Dataset):
         # Filter metadata for the specified folder
         self.metadata = self.metadata[self.metadata['split'] == folder].reset_index(drop=True)
 
-        print(f"Loading paired HE-IHC dataset from:")
-        print(f"  HE directory: {self.he_dir}")
-        print(f"  IHC directory: {self.ihc_dir}")
+        print(f"Loading paired dataset from:")
+        print(f"  Source directory: {self.source_dir}")
+        print(f"  Target directory: {self.target_dir}")
         print(f"  Mask directory: {self.mask_dir}")
         print(f"  Number of paired images: {len(self.metadata)}")
 
-        # Default transform: resize and normalize
-        self.transform = transforms.Compose([
-            transforms.Resize((self.image_size, self.image_size)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
+        # Store augmentation flag
+        self.use_augmentation = use_augmentation
+        
+        # Normalization transform
+        self.normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
     def __len__(self):
         return len(self.metadata)
     
     def __getitem__(self, idx):
         """
         Returns:
-            he_img: HE image tensor (C, H, W)
-            ihc_img: IHC image tensor (C, H, W)
+            source_img: Source image tensor (C, H, W)
+            target_img: Target image tensor (C, H, W)
             mask_img: Mask image tensor (1, H, W)
         """
         row = self.metadata.iloc[idx]
-        he_filename = row[self.source_column]
-        ihc_filename = row[self.target_column]
+        source_filename = row[self.source_column]
+        target_filename = row[self.target_column]
         mask_filename = row[self.mask_column]
 
-        # Load HE image
-        he_path = os.path.join(self.he_dir, he_filename)
-        assert os.path.exists(he_path), f"HE image not found: {he_path}"
-        he_img_cv = cv2.imread(he_path)
-        he_img = Image.fromarray(cv2.cvtColor(he_img_cv, cv2.COLOR_BGR2RGB))
+        # Load source image
+        source_path = os.path.join(self.source_dir, source_filename)
+        assert os.path.exists(source_path), f"Source image not found: {source_path}"
+        source_img_cv = cv2.imread(source_path)
+        source_img = Image.fromarray(cv2.cvtColor(source_img_cv, cv2.COLOR_BGR2RGB))
 
-        # Load IHC image
-        ihc_path = os.path.join(self.ihc_dir, ihc_filename)
-        assert os.path.exists(ihc_path), f"IHC image not found: {ihc_path}"
-        ihc_img_cv = cv2.imread(ihc_path)
-        ihc_img = Image.fromarray(cv2.cvtColor(ihc_img_cv, cv2.COLOR_BGR2RGB))
-
+        # Load target image
+        target_path = os.path.join(self.target_dir, target_filename)
+        assert os.path.exists(target_path), f"Target image not found: {target_path}"
+        target_img_cv = cv2.imread(target_path)
+        target_img = Image.fromarray(cv2.cvtColor(target_img_cv, cv2.COLOR_BGR2RGB))
         # Load Mask image
         mask_path = os.path.join(self.mask_dir, mask_filename)
         assert os.path.exists(mask_path), f"Mask image not found: {mask_path}"
         mask_img_cv = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        mask_img_cv = cv2.resize(mask_img_cv,(self.image_size, self.image_size),interpolation=cv2.INTER_NEAREST)
-        # only keep pixels value > 1
-        mask_img_cv = np.where(mask_img_cv > 1, 1, 0).astype(np.uint8)
+        mask_img = Image.fromarray(mask_img_cv)
 
-        # Binarize the mask
         # Apply transformations
-        he_img = self.transform(he_img)
-        ihc_img = self.transform(ihc_img)
-
-        if self.direction == "HE_to_IHC":
-            return he_img, ihc_img, torch.from_numpy(mask_img_cv).unsqueeze(0)
+        if self.use_augmentation:
+            # Get random crop parameters
+            i, j, h, w = transforms.RandomCrop.get_params(
+                source_img, output_size=(self.image_size, self.image_size)
+            )
+            
+            # Apply the same crop to all images
+            source_img = TF.crop(source_img, i, j, h, w)
+            target_img = TF.crop(target_img, i, j, h, w)
+            mask_img = TF.crop(mask_img, i, j, h, w)
+            
+            # Random horizontal flip
+            if random.random() > 0.5:
+                source_img = TF.hflip(source_img)
+                target_img = TF.hflip(target_img)
+                mask_img = TF.hflip(mask_img)
+            
+            # Random vertical flip
+            if random.random() > 0.5:
+                source_img = TF.vflip(source_img)
+                target_img = TF.vflip(target_img)
+                mask_img = TF.vflip(mask_img)
+            
+            # Convert to tensor
+            source_img = TF.to_tensor(source_img)
+            target_img = TF.to_tensor(target_img)
+            # Convert mask to tensor without normalizing (preserve integer class values)
+            mask_img = torch.from_numpy(np.array(mask_img)).unsqueeze(0).float()
+            
+            # Normalize RGB images only
+            source_img = self.normalize(source_img)
+            target_img = self.normalize(target_img)
         else:
-            return ihc_img, he_img, torch.from_numpy(mask_img_cv).unsqueeze(0)
+            # Resize without augmentation
+            source_img = TF.resize(source_img, (self.image_size, self.image_size))
+            target_img = TF.resize(target_img, (self.image_size, self.image_size))
+            mask_img = TF.resize(mask_img, (self.image_size, self.image_size), interpolation=TF.InterpolationMode.NEAREST)
+            
+            # Convert to tensor
+            source_img = TF.to_tensor(source_img)
+            target_img = TF.to_tensor(target_img)
+            # Convert mask to tensor without normalizing (preserve integer class values)
+            mask_img = torch.from_numpy(np.array(mask_img)).unsqueeze(0).float()
+            
+            # Normalize RGB images only
+            source_img = self.normalize(source_img)
+            target_img = self.normalize(target_img)
+        
+        # Remove channel dimension from mask (should be [1, H, W])
+        mask_img = mask_img.squeeze(0).unsqueeze(0)
 
-class PairedHEIHCDataModule(LightningDataModule):
+        if self.direction == "S2T":
+            return source_img, target_img, mask_img
+        else:
+            return target_img, source_img, mask_img
+
+class PairedDataModule(LightningDataModule):
     def __init__(
         self,
         data_dir: str = "data/",
@@ -114,7 +168,8 @@ class PairedHEIHCDataModule(LightningDataModule):
         num_workers: int = 4,
         image_size: int = 512,
         direction: str = "HE_to_IHC", 
-        pin_memory: bool = True
+        pin_memory: bool = True,
+        use_augmentation: bool = False,
     ) -> None:
         super().__init__()
         self.save_hyperparameters(logger=False)
@@ -127,6 +182,7 @@ class PairedHEIHCDataModule(LightningDataModule):
         self.image_size = image_size
         self.direction = direction
         self.pin_memory = pin_memory
+        self.use_augmentation = use_augmentation
 
     def prepare_data(self) -> None:
         """Download data if needed. Lightning ensures that `self.prepare_data()` is called only
@@ -161,7 +217,7 @@ class PairedHEIHCDataModule(LightningDataModule):
 
         :return: The train dataloader.
         """
-        self.data_train = PairedHEIHCDataset(
+        self.data_train = PairedDataset(
             data_dir=self.data_dir,
             csv_file_name=self.csv_file_name,
             source_column=self.source_column,
@@ -169,6 +225,7 @@ class PairedHEIHCDataModule(LightningDataModule):
             folder="train",
             image_size=self.image_size,
             direction=self.direction,
+            use_augmentation=self.use_augmentation,
         )
         return DataLoader(
             dataset=self.data_train,
@@ -186,7 +243,7 @@ class PairedHEIHCDataModule(LightningDataModule):
 
         :return: The validation dataloader.
         """
-        self.data_val = PairedHEIHCDataset(
+        self.data_val = PairedDataset(
             data_dir=self.data_dir,
             csv_file_name=self.csv_file_name,
             source_column=self.source_column,
@@ -194,6 +251,7 @@ class PairedHEIHCDataModule(LightningDataModule):
             folder="val",
             image_size=self.image_size,
             direction=self.direction,
+            use_augmentation=self.use_augmentation,
         )
         return DataLoader(
             dataset=self.data_val,
@@ -211,7 +269,7 @@ class PairedHEIHCDataModule(LightningDataModule):
 
         :return: The test dataloader.
         """
-        self.data_test = PairedHEIHCDataset(
+        self.data_test = PairedDataset(
             data_dir=self.data_dir,
             csv_file_name=self.csv_file_name,
             source_column=self.source_column,
@@ -219,6 +277,7 @@ class PairedHEIHCDataModule(LightningDataModule):
             folder="test",
             image_size=self.image_size,
             direction=self.direction,
+            use_augmentation=False,
         )
         return DataLoader(
             dataset=self.data_test,
@@ -268,27 +327,30 @@ class PairedHEIHCDataModule(LightningDataModule):
 
 
 if __name__ == "__main__":
-    data_dir = "/data1/shared/data/destain_restain/he_amyloid/positive_crops/flow_matching/"
-    dataset = PairedHEIHCDataset(data_dir=data_dir, csv_file_name="dataset_nirschl_et_al_2026_metadata.csv", folder="train", image_size=512, source_column="he_filepath", target_column="ihc_filepath")
+    data_dir = "/data1/shared/data/destain_restain/he_lhe/"
+    csv_file_name = "dataset_he-lhe_512x512_metadata2.csv"
+    image_size = 256
+    use_augmentation = True
+    dataset = PairedDataset(data_dir=data_dir, csv_file_name=csv_file_name, folder="train", image_size=image_size, source_column="he_filepath", target_column="lfb_filepath", use_augmentation=use_augmentation)
     print(f"Dataset length: {len(dataset)}")
-    he_img, ihc_img, mask_img = dataset[0]
-    print(f"HE image shape: {he_img.shape}, IHC image shape: {ihc_img.shape}, Mask image shape: {mask_img.shape}")
+    source_img, target_img, mask_img = dataset[0]
+    print(f"Source image shape: {source_img.shape}, Target image shape: {target_img.shape}, Mask image shape: {mask_img.shape}")
 
-    data_module = PairedHEIHCDataModule(data_dir=data_dir, csv_file_name="dataset_nirschl_et_al_2026_metadata.csv", batch_size=4, image_size=512)
+    data_module = PairedDataModule(data_dir=data_dir, csv_file_name=csv_file_name, batch_size=4, image_size=image_size, source_column="he_filepath", target_column="lfb_filepath", use_augmentation=use_augmentation)
     data_module.prepare_data()
     data_module.setup(stage="fit")
     train_loader = data_module.train_dataloader()
     for batch in train_loader:
-        he_imgs, ihc_imgs, mask_imgs = batch
-        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
+        source_imgs, target_imgs, mask_imgs = batch
+        print(f"Batch Source images shape: {source_imgs.shape}, Batch Target images shape: {target_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
         break
     val_loader = data_module.val_dataloader()
     for batch in val_loader:
-        he_imgs, ihc_imgs, mask_imgs = batch
-        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
+        source_imgs, target_imgs, mask_imgs = batch
+        print(f"Batch Source images shape: {source_imgs.shape}, Batch Target images shape: {target_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
         break
     test_loader = data_module.test_dataloader()
     for batch in test_loader:
-        he_imgs, ihc_imgs, mask_imgs = batch
-        print(f"Batch HE images shape: {he_imgs.shape}, Batch IHC images shape: {ihc_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
+        source_imgs, target_imgs, mask_imgs = batch
+        print(f"Batch Source images shape: {source_imgs.shape}, Batch Target images shape: {target_imgs.shape}, Batch Mask images shape: {mask_imgs.shape}")
         break

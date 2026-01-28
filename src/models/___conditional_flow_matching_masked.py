@@ -116,6 +116,11 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         :param batch: A batch of data (source_img, target_img, target_label)
         :param batch_idx: The index of the batch
         :return: The loss value
+
+        #dims
+        source_img - B, C, H, W 
+        target_img - B, C, H, W 
+        mask - B, 1, H, W
         """
         source_img, target_img, mask = batch
         x0 = source_img

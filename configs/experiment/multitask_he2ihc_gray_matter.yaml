@@ -1,0 +1,76 @@
+# @package _global_
+
+# Multi-task learning experiment: H&E → IHC virtual staining + amyloid segmentation
+# This experiment trains a model with two heads:
+# - Head A: Virtual staining (H&E → IHC) using conditional flow matching
+# - Head B: Amyloid segmentation on H&E (predict mask M)
+# Joint loss: L = L_FM + α * L_seg
+
+defaults:
+  - override /data: paired_data_multiclass_seg_mask
+  - override /model: conditional_flow_matching_multitask_multiclass
+  - override /callbacks: default.yaml
+  - override /trainer: default.yaml
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+# Experiment name
+name: "multitask_he2lfb_gray_matter_256x256"
+WANDB_PROJECT: "positive_amyloid"
+
+seed: 1984
+batch_size: 32
+
+trainer:
+  min_epochs: 20
+  max_epochs: 200
+  accelerator: "cuda"
+  strategy: "ddp"
+  devices: 4
+
+# Model hyperparameters
+model:
+  seg_loss_weight: 1.0  # α: weight for segmentation loss (experiment with 0.5, 1.0, 2.0)
+  dice_weight: 0.5  # balance between Dice and BCE (0.5 = equal)
+  log_images: true
+  n_images_log: 5
+  optimizer:
+    lr: 1e-4
+    weight_decay: 1e-5
+
+data:
+  batch_size: ${batch_size}
+  num_workers: 8
+  data_dir: /data1/shared/data/destain_restain/he_lhe/
+  csv_file_name: dataset_he-lhe_512x512_metadata2.csv
+  source_column: 'he_filepath'
+  target_column: 'target_filepath'
+  image_size: 256
+  direction: S2T
+  pin_memory: true
+  use_augmentation: True
+
+logger:
+  wandb:
+    project: "${WANDB_PROJECT}"
+    tags: ${tags}
+    group: "Training"
+    name: ${name}
+    log_model: True
+  aim:
+    experiment: ""
+
+callbacks:
+  early_stopping: null
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "best-{epoch:03d}-{val/loss:.4f}"
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3  # Keep top 3 best models
+    save_last: True
+    auto_insert_metric_name: False
+    every_n_epochs: 10  # Save every 10 epochs
+
+# Tags for logging
+tags: ["multitask", "he2ihc", "amyloid_segmentation", "flow_matching"]

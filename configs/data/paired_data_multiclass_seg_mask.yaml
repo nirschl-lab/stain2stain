@@ -1,0 +1,11 @@
+_target_: src.data.paired_data_multiclassmask.PairedDataModule
+data_dir: /data1/shared/data/destain_restain/he_lhe/
+csv_file_name: dataset_he-lhe_512x512_metadata2.csv
+source_column: 'he_filepath'
+target_column: 'target_filepath'
+batch_size: 2
+num_workers: 4
+image_size: 512
+direction: S2T
+pin_memory: true
+use_augmentation: False

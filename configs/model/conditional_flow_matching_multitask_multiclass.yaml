@@ -1,0 +1,71 @@
+_target_: src.models.conditional_flow_matching_multitask_multiclassloss.MultiTaskFlowMatchingLitModule
+
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1e-4
+  weight_decay: 1e-5
+
+scheduler:
+  _target_: torch.optim.lr_scheduler.ReduceLROnPlateau
+  _partial_: true
+  mode: min
+  factor: 0.1
+  patience: 10
+
+# Number of classes in the segmentation mask
+num_classes: 5
+
+# Shared encoder backbone (learns features F from H&E)
+encoder:
+  _target_: src.models.components.shared_encoder.SharedEncoder
+  in_channels: 3  # RGB H&E images
+  features: [64, 128, 256, 512, 1024]  # Feature channels at each level
+  return_skip_connections: true
+
+# Head A: Flow matching decoder (Virtual staining H&E → IHC)
+flow_decoder:
+  _target_: src.models.components.task_decoders.FlowMatchingDecoder
+  bottleneck_channels: 1024  # Must match encoder's last feature dim
+  features: [512, 256, 128, 64]  # Decoder feature channels (reversed)
+  out_channels: 3  # RGB IHC output
+  time_emb_dim: 256  # Time embedding dimension
+  bilinear: true
+
+# Head B: Segmentation decoder (Amyloid segmentation on H&E)
+seg_decoder:
+  _target_: src.models.components.task_decoders.SegmentationDecoder
+  bottleneck_channels: 1024  # Must match encoder's last feature dim
+  features: [512, 256, 128, 64]  # Decoder feature channels (reversed)
+  out_channels: ${model.num_classes}  # Number of classes in the segmentation mask
+  bilinear: true
+
+# Flow matcher for conditional flow matching
+flow_matcher:
+  _target_: torchcfm.conditional_flow_matching.ConditionalFlowMatcher
+  sigma: 0.0
+
+# ODE solver for inference
+solver:
+  _target_: torchdyn.core.NeuralODE
+  _partial_: true
+  solver: dopri5
+  sensitivity: adjoint
+  atol: 1e-4
+  rtol: 1e-4
+
+# Compile model for faster training with PyTorch 2.0
+compile: false
+
+# Logging
+log_images: true
+n_images_log: 5
+time_emb_dim: 256
+
+# Multi-task loss weights
+# Total loss: L = L_FM + seg_loss_weight * L_seg
+seg_loss_weight: 1.0  # α in the equation (balance between flow matching and segmentation)
+
+# Segmentation loss weights
+# L_seg = dice_weight * L_dice + (1 - dice_weight) * L_bce
+dice_weight: 0.5  # Balance between Dice and BCE loss (0.5 = equal weight)

@@ -1,41 +1,42 @@
 # @package _global_
 
-# to execute this experiment run:
-# python train.py experiment=example
+# Multi-task learning experiment: H&E → IHC virtual staining + amyloid segmentation
+# This experiment trains a model with two heads:
+# - Head A: Virtual staining (H&E → IHC) using conditional flow matching
+# - Head B: Amyloid segmentation on H&E (predict mask M)
+# Joint loss: L = L_FM + α * L_seg
 
 defaults:
   - override /data: paired_data_mask_he_amyloid
-  - override /model: conditional_flow_matching_mask_toggeling
-  - override /callbacks: default
-  - override /trainer: default
+  - override /model: conditional_flow_matching_multitask
+  - override /callbacks: default.yaml
+  - override /trainer: default.yaml
 
 # all parameters below will be merged with parameters from default configurations set above
 # this allows you to overwrite only specified parameters
-name: "Non attention toggled mask"
+# Experiment name
+name: "multitask_he2ihc_amyloid_seg"
 WANDB_PROJECT: "positive_amyloid"
-tags: ["dev"]
 
-seed: 12345
-
-base_lr: 1e-4
-batch_size: 8
+seed: 1987
+batch_size: 32
 
 trainer:
   min_epochs: 20
-  max_epochs: 50
+  max_epochs: 200
   accelerator: "cuda"
   strategy: "ddp"
   devices: 4
-  # log_every_n_steps: 2
-  # limit_train_batches: 5
-  # limit_val_batches: 2
 
-
+# Model hyperparameters
 model:
+  seg_loss_weight: 1.0  # α: weight for segmentation loss (experiment with 0.5, 1.0, 2.0)
+  dice_weight: 0.5  # balance between Dice and BCE (0.5 = equal)
+  log_images: true
+  n_images_log: 5
   optimizer:
-    lr: ${base_lr}
-    weight_decay: 1e-3
-  log_images: True
+    lr: 1e-4
+    weight_decay: 1e-5
 
 data:
   batch_size: ${batch_size}
@@ -63,10 +64,5 @@ callbacks:
     auto_insert_metric_name: False
     every_n_epochs: 10  # Save every 10 epochs
 
-# callbacks:
-#   early_stopping:
-#     monitor: "val/loss"
-#     patience: 30-50
-#     mode: "min"
-#     min_delta: 0.001  
-#     check_on_train_epoch_end: false
+# Tags for logging
+tags: ["multitask", "he2ihc", "amyloid_segmentation", "flow_matching"]
