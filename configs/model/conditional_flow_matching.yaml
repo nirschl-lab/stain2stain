@@ -42,3 +42,4 @@ solver:
 compile: false
 
 log_images: true
+n_images_log: 5

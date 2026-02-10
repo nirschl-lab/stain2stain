@@ -17,6 +17,7 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         scheduler: torch.optim.lr_scheduler = None,
         compile: bool = False,
         log_images: bool = True,
+        n_images_log: int = 5,
     ) -> None:
         """Initialize a `ConditionalFlowMatchingLitModule`.
 
@@ -36,6 +37,7 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.log_images = log_images
+        self.n_images_log = n_images_log
         if compile:
             self.net = torch.compile(self.net)
 
@@ -55,7 +57,7 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         :param batch: A batch of data (source_img, target_img, target_label)
         :return: The loss value
         """
-        source_img, target_img = batch
+        source_img, target_img = batch[:2]
         
         x0 = source_img  # paired source
         x1 = target_img  # paired target (same filename)
@@ -185,9 +187,9 @@ class ConditionalFlowMatchingLitModule(LightningModule):
         if wandb_logger is None:
             return  # No wandb logger found, skip logging
         
-        # Select up to 10 random images from the batch
+        # Select up to n_images_log random images from the batch
         source_imgs, target_imgs = batch_images
-        num_images = min(10, len(source_imgs))
+        num_images = min(self.n_images_log, len(source_imgs))
         indices = torch.randperm(len(source_imgs))[:num_images]
         
         wandb_images = []
@@ -197,7 +199,7 @@ class ConditionalFlowMatchingLitModule(LightningModule):
             
             # Generate prediction using the model
             with torch.no_grad():
-                generated_img = self.generate(source_img, num_steps=100)
+                generated_img = self.generate(source_img, num_steps=2)
             
             # Denormalize images from [-1, 1] to [0, 1]
             source_img_vis = (source_img.squeeze(0).cpu() + 1) / 2
@@ -218,19 +220,19 @@ class ConditionalFlowMatchingLitModule(LightningModule):
             wandb_images.append(
                 wandb.Image(
                     source_np,
-                    caption=f"{split}_source_{idx.item()}"
+                    caption=f"{split} - Epoch {self.current_epoch} - Source"
                 )
             )
             wandb_images.append(
                 wandb.Image(
                     generated_np,
-                    caption=f"{split}_generated_{idx.item()}"
+                    caption=f"{split} - Epoch {self.current_epoch} - Generated"
                 )
             )
             wandb_images.append(
                 wandb.Image(
                     target_np,
-                    caption=f"{split}_target_{idx.item()}"
+                    caption=f"{split} - Epoch {self.current_epoch} - Target"
                 )
             )
         
@@ -250,15 +252,25 @@ class ConditionalFlowMatchingLitModule(LightningModule):
             if train_dataloader is None:
                 return
             
-            # Get one batch from train dataloader
+            # Collect enough batches to get n_images_log images
             try:
-                # Get the first batch
-                batch = next(iter(train_dataloader))
+                collected_sources = []
+                collected_targets = []
                 
-                # Move batch to device
-                if isinstance(batch, (tuple, list)) and len(batch) >= 2:
-                    source_imgs = batch[0].to(self.device)
-                    target_imgs = batch[1].to(self.device)
+                for batch in train_dataloader:
+                    if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                        collected_sources.append(batch[0])
+                        collected_targets.append(batch[1])
+                        
+                        # Check if we have enough images
+                        total_images = sum(src.shape[0] for src in collected_sources)
+                        if total_images >= self.n_images_log:
+                            break
+                
+                if collected_sources:
+                    # Concatenate all collected batches and move to device
+                    source_imgs = torch.cat(collected_sources, dim=0).to(self.device)
+                    target_imgs = torch.cat(collected_targets, dim=0).to(self.device)
                     batch_images = (source_imgs, target_imgs)
                     
                     # Log images
@@ -286,15 +298,25 @@ class ConditionalFlowMatchingLitModule(LightningModule):
             # Handle single dataloader or list of dataloaders
             val_dataloader = val_dataloaders[0] if isinstance(val_dataloaders, list) else val_dataloaders
             
-            # Get one batch from val dataloader
+            # Collect enough batches to get n_images_log images
             try:
-                # Get the first batch
-                batch = next(iter(val_dataloader))
+                collected_sources = []
+                collected_targets = []
                 
-                # Move batch to device
-                if isinstance(batch, (tuple, list)) and len(batch) >= 2:
-                    source_imgs = batch[0].to(self.device)
-                    target_imgs = batch[1].to(self.device)
+                for batch in val_dataloader:
+                    if isinstance(batch, (tuple, list)) and len(batch) >= 2:
+                        collected_sources.append(batch[0])
+                        collected_targets.append(batch[1])
+                        
+                        # Check if we have enough images
+                        total_images = sum(src.shape[0] for src in collected_sources)
+                        if total_images >= self.n_images_log:
+                            break
+                
+                if collected_sources:
+                    # Concatenate all collected batches and move to device
+                    source_imgs = torch.cat(collected_sources, dim=0).to(self.device)
+                    target_imgs = torch.cat(collected_targets, dim=0).to(self.device)
                     batch_images = (source_imgs, target_imgs)
                     
                     # Log images

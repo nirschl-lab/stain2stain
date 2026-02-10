@@ -1,0 +1,68 @@
+# @package _global_
+
+
+defaults:
+  - override /data: paired_data
+  - override /model: conditional_flow_matching
+  - override /callbacks: default.yaml
+  - override /trainer: default.yaml
+
+# all parameters below will be merged with parameters from default configurations set above
+# this allows you to overwrite only specified parameters
+# Experiment name
+name: "simple_flow_matching_graymatter_256x256"
+WANDB_PROJECT: "positive_amyloid"
+
+seed: 1984
+batch_size: 32
+
+trainer:
+  min_epochs: 20
+  max_epochs: 200
+  accelerator: "cuda"
+  strategy: "ddp"
+  devices: 4
+
+model:
+  optimizer:
+    lr: 1e-4
+    weight_decay: 1e-5
+  log_images: true
+  n_images_log: 5
+
+data:
+  data_dir: /data1/shared/data/destain_restain/he_lhe
+  csv_file_name: dataset_he-lhe_512x512_metadata2.csv
+  source_column: he_filepath
+  target_column: target_filepath
+  num_workers: 8
+  batch_size: ${batch_size}
+  image_size: 256
+  direction: S2T
+  use_augmentation: true
+  pin_memory: true
+
+logger:
+  wandb:
+    project: "${WANDB_PROJECT}"
+    tags: ${tags}
+    group: "Training"
+    name: ${name}
+    log_model: True
+  aim:
+    experiment: ""
+
+callbacks:
+  early_stopping: null
+  model_checkpoint:
+    dirpath: ${paths.output_dir}/checkpoints
+    filename: "best-{epoch:03d}-{val/loss:.4f}"
+    monitor: "val/loss"
+    mode: "min"
+    save_top_k: 3  # Keep top 3 best models
+    save_last: True
+    auto_insert_metric_name: False
+    every_n_epochs: 10  # Save every 10 epochs
+
+# Tags for logging
+tags: ["simple_flow_matching"]

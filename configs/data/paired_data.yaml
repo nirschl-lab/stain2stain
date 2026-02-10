@@ -1,0 +1,11 @@
+_target_: src.data.paired_data_module.PairedDataModule
+data_dir: /data1/shared/data/destain_restain/he_amyloid/positive_crops/flow_matching/
+csv_file_name: dataset_nirschl_et_al_2026_metadata.csv
+source_column: 'he_filepath'
+target_column: 'ihc_filepath'
+batch_size: 2
+num_workers: 4
+image_size: 512
+direction: HE_to_IHC
+pin_memory: true
+use_augmentation: false

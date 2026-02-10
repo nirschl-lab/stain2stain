@@ -37,7 +37,7 @@ seg_decoder:
   _target_: src.models.components.task_decoders.SegmentationDecoder
   bottleneck_channels: 1024  # Must match encoder's last feature dim
   features: [512, 256, 128, 64]  # Decoder feature channels (reversed)
-  out_channels: ${model.num_classes}  # Number of classes in the segmentation mask
+  out_channels: ${num_classes}  # Number of classes in the segmentation mask
   bilinear: true
 
 # Flow matcher for conditional flow matching
